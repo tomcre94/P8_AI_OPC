@@ -7,22 +7,21 @@ from tqdm import tqdm
 
 # Définition des classes principales et de leur encodage
 CLASSES = {
-    "flat": 0, "human": 1, "vehicle": 2, "construction": 3,
-    "object": 4, "nature": 5, "sky": 6, "void": 7
+    "pole": 0, "static": 1, "car": 2, "traffic sign": 3,
+    "person": 4, "vegetation": 5, "traffic light": 6, "sidewalk": 7
 }
 
 # Correspondance entre les classes secondaires et les classes principales
 CLASS_MAPPING = {
-    "road": "flat", "sidewalk": "flat", "parking": "flat", "rail track": "flat",
-    "person": "human", "rider": "human",
-    "car": "vehicle", "truck": "vehicle", "bus": "vehicle", "on rails": "vehicle", 
-    "motorcycle": "vehicle", "bicycle": "vehicle", "caravan": "vehicle", "trailer": "vehicle",
-    "building": "construction", "wall": "construction", "fence": "construction", 
-    "guard rail": "construction", "bridge": "construction", "tunnel": "construction",
-    "pole": "object", "pole group": "object", "traffic sign": "object", "traffic light": "object",
-    "vegetation": "nature", "terrain": "nature",
-    "sky": "sky",
-    "ground": "void", "dynamic": "void", "static": "void"
+    "pole": "pole", "pole group": "pole",
+    "static": "static", "ground": "static",
+    "car": "car", "truck": "car", "bus": "car", "on rails": "car", 
+    "motorcycle": "car", "bicycle": "car", "caravan": "car", "trailer": "car",
+    "traffic sign": "traffic sign",
+    "person": "person", "rider": "person",
+    "vegetation": "vegetation", "terrain": "vegetation",
+    "traffic light": "traffic light",
+    "sidewalk": "sidewalk", "road": "sidewalk", "parking": "sidewalk", "rail track": "sidewalk"
 }
 
 def create_segmentation_mask(json_path, img_width, img_height, debug=False):
@@ -32,24 +31,31 @@ def create_segmentation_mask(json_path, img_width, img_height, debug=False):
     
     mask = np.full((img_height, img_width), 255, dtype=np.uint8)  # 255 = background/ignore
     
-    print(f"Fichier JSON : {json_path}")
-    print("Labels trouvés :", [obj['label'] for obj in data['objects']])
-
+    if debug:
+        print(f"Fichier JSON : {json_path}")
+        print("Labels trouvés :", [obj['label'] for obj in data['objects']])
+    
+    found_classes_of_interest = False
+    
     for obj in data['objects']:
         label = obj['label']
         primary_label = CLASS_MAPPING.get(label, None)
         if primary_label and primary_label in CLASSES:
             polygon = np.array(obj['polygon'], np.int32)
             cv2.fillPoly(mask, [polygon], CLASSES[primary_label])
+            found_classes_of_interest = True
         elif debug:
             print(f"Label '{label}' not in CLASS_MAPPING, skipping.")
     
-    return mask
+    return mask, found_classes_of_interest
 
 def process_dataset(gtfine_dir, output_dir, debug=False):
     """ Parcourt le dossier GTFine et génère des masques """
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
+    
+    total_images = 0
+    saved_images = 0
     
     for split in ['train', 'val', 'test']:
         split_dir = os.path.join(gtfine_dir, split)
@@ -63,6 +69,7 @@ def process_dataset(gtfine_dir, output_dir, debug=False):
             
             for file in os.listdir(city_dir):
                 if file.endswith('_gtFine_polygons.json'):
+                    total_images += 1
                     json_path = os.path.join(city_dir, file)
                     image_name = file.replace('_gtFine_polygons.json', '_gtFine_color.png')
                     
@@ -77,13 +84,20 @@ def process_dataset(gtfine_dir, output_dir, debug=False):
                         print(f"Failed to read image: {img_path}")
                         continue
                     
-                    mask = create_segmentation_mask(json_path, img.shape[1], img.shape[0], debug)
+                    mask, has_classes_of_interest = create_segmentation_mask(json_path, img.shape[1], img.shape[0], debug)
                     
-                    # Sauvegarde du masque
-                    mask_path = os.path.join(output_city_dir, file.replace('_gtFine_polygons.json', '_mask.png'))
-                    cv2.imwrite(mask_path, mask)
-                    if debug:
-                        print(f"Mask saved: {mask_path}")
+                    # Ne sauvegarder que si des classes d'intérêt sont présentes
+                    if has_classes_of_interest:
+                        # Sauvegarde du masque
+                        mask_path = os.path.join(output_city_dir, file.replace('_gtFine_polygons.json', '_mask.png'))
+                        cv2.imwrite(mask_path, mask)
+                        saved_images += 1
+                        if debug:
+                            print(f"Mask saved: {mask_path}")
+                    elif debug:
+                        print(f"Skipping {file} - No classes of interest found")
+    
+    print(f"Processing complete: {saved_images}/{total_images} images contained classes of interest and were saved.")
 
 # Exécution du script
 gtfine_path = "./gtfine"

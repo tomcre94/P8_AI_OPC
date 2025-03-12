@@ -22,5 +22,5 @@ def display_sample_mask(mask_path):
     plt.show()
 
 # Vérifier un exemple de masque
-example_mask = ".\output_masks/test/munich/munich_000041_000019_mask.png"
+example_mask = ".\output_masks/test/munich/munich_000042_000019_mask.png"
 display_sample_mask(example_mask)
