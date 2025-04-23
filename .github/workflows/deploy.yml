@@ -53,26 +53,38 @@ jobs:
       # Vérifier l'état du déploiement
       - name: Verify deployment
         run: |
-          echo "Checking deployment status..."
+          echo "Vérification du statut de l'application web..."
 
-          # La commande correcte pour lister les déploiements
-          echo "Getting deployment history..."
-          az webapp deployment list-deployments --name unet-segmentation-api --resource-group unet-segmentation-rg
+          # Vérifier l'état de l'application
+          az webapp show --name unet-segmentation-api --resource-group unet-segmentation-rg --query state --output tsv
 
-          # Obtenir les creds de publication pour vérifier les fichiers
+          # Obtenir les informations de publication
+          echo "Récupération des informations de publication..."
           PUBLISH_PROFILE=$(az webapp deployment list-publishing-credentials --name unet-segmentation-api --resource-group unet-segmentation-rg --output json)
           USERNAME=$(echo $PUBLISH_PROFILE | jq -r '.publishingUserName')
           PASSWORD=$(echo $PUBLISH_PROFILE | jq -r '.publishingPassword')
 
           # Obtenir l'URL SCM correcte
+          echo "Récupération de l'URL SCM correcte..."
           SCM_HOST=$(az webapp show --name unet-segmentation-api --resource-group unet-segmentation-rg --query defaultHostName --output tsv)
-          # Corriger la syntaxe pour substituer le texte dans la variable
-          SCM_URL="https://${SCM_HOST/.azurewebsites.net/.scm.azurewebsites.net}"
+          echo "Host de l'application: $SCM_HOST"
 
-          echo "SCM URL: $SCM_URL"
+          # Construire l'URL SCM (méthode alternative sans substitution)
+          SCM_HOST_PREFIX=${SCM_HOST%%.*}
+          SCM_URL="https://$SCM_HOST_PREFIX.scm.azurewebsites.net"
+          echo "URL SCM construite: $SCM_URL"
 
-          echo "Listing files in wwwroot to verify deployment..."
+          # Vérifier si l'URL SCM est accessible
+          echo "Test de connexion à l'URL SCM..."
+          curl -s -I -u "$USERNAME:$PASSWORD" "$SCM_URL" | head -n 1
+
+          # Lister les fichiers dans wwwroot
+          echo "Liste des fichiers dans wwwroot..."
           curl -s -u "$USERNAME:$PASSWORD" "$SCM_URL/api/vfs/site/wwwroot/" | jq '.[].name'
+
+          # Lister également les fichiers dans le répertoire wwwroot/site
+          echo "Liste des fichiers dans le répertoire parent..."
+          curl -s -u "$USERNAME:$PASSWORD" "$SCM_URL/api/vfs/site/" | jq '.[].name'
 
       # Démarrer l'application
       - name: Start Web App
