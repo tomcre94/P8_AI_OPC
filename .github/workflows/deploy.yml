@@ -1,6 +1,4 @@
-# .github/workflows/deploy.yml
 name: Deploy to Azure Web App
-
 on:
   push:
     branches: [main]
@@ -9,16 +7,14 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       # Créer un petit ZIP pour le déploiement
       - name: Create deployment package
         run: |
           echo "Creating deployment package..."
-          rm -f deploy.zip
-          zip -r deploy.zip . -x "*.git*" -x "*.ipynb" -x "deploy.zip"
+          zip -r deploy.zip . -x "*.git*" -x "*.ipynb" -x "leftImg8bit/*" -x "gtFine/*"
           ls -la deploy.zip
 
       # Installer Azure CLI
@@ -27,74 +23,62 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # Récupérer les informations de publication de manière plus fiable
-      - name: Get Publishing Profile
-        id: get-publish-profile
+      # Diagnostique - Vérifier l'URL SCM correcte
+      - name: Get correct SCM URL
         run: |
-          PUBLISH_CREDS=$(az webapp deployment list-publishing-credentials --name unet-segmentation-api --resource-group unet-segmentation-rg --output json)
-          PUBLISH_USERNAME=$(echo $PUBLISH_CREDS | jq -r '.publishingUserName')
-          PUBLISH_PASSWORD=$(echo $PUBLISH_CREDS | jq -r '.publishingPassword')
-          SCM_URL="https://unet-segmentation-api-amb3b4d5hbfpfce4.scm.francecentral-01.azurewebsites.net"
+          APP_NAME="unet-segmentation-api"
+          RG_NAME="unet-segmentation-rg"
+          echo "Getting app details..."
+          az webapp show --name $APP_NAME --resource-group $RG_NAME
 
-          echo "::set-output name=username::$PUBLISH_USERNAME"
-          echo "::set-output name=password::$PUBLISH_PASSWORD" 
-          echo "::set-output name=scm_url::$SCM_URL"
+          # Obtenir l'URL SCM correcte
+          SCM_HOST=$(az webapp show --name $APP_NAME --resource-group $RG_NAME --query defaultHostName --output tsv)
+          CORRECT_SCM_URL="https://${SCM_HOST/\.azurewebsites\.net/.scm.azurewebsites.net}"
+          echo "Correct SCM URL should be: $CORRECT_SCM_URL"
 
       # Arrêter l'application
       - name: Stop Web App
         run: |
           echo "Stopping web app..."
           az webapp stop --name unet-segmentation-api --resource-group unet-segmentation-rg
+
+      # Utilisez l'action officielle pour le déploiement
+      - name: Deploy to Azure Web App
+        id: deploy-to-webapp
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: 'unet-segmentation-api'
+          package: './deploy.zip'
+
+      # Vérifier l'état du déploiement
+      - name: Verify deployment
+        run: |
+          echo "Checking deployment status..."
+          DEPLOY_STATUS=$(az webapp deployment list --name unet-segmentation-api --resource-group unet-segmentation-rg --output tsv --query "[0].status")
+          echo "Latest deployment status: $DEPLOY_STATUS"
+
+          # Obtenir les creds de publication pour vérifier les fichiers
+          PUBLISH_PROFILE=$(az webapp deployment list-publishing-credentials --name unet-segmentation-api --resource-group unet-segmentation-rg --output json)
+          USERNAME=$(echo $PUBLISH_PROFILE | jq -r '.publishingUserName')
+          PASSWORD=$(echo $PUBLISH_PROFILE | jq -r '.publishingPassword')
+
+          # Obtenir l'URL SCM correcte
+          SCM_HOST=$(az webapp show --name unet-segmentation-api --resource-group unet-segmentation-rg --query defaultHostName --output tsv)
+          SCM_URL="https://${SCM_HOST/\.azurewebsites\.net/.scm.azurewebsites.net}"
+
+          echo "Listing files in wwwroot to verify deployment..."
+          curl -s -u "$USERNAME:$PASSWORD" "$SCM_URL/api/vfs/site/wwwroot/" | jq '.[].name'
+
+      # Démarrer l'application
+      - name: Start Web App
+        run: |
+          echo "Starting web app..."
+          az webapp start --name unet-segmentation-api --resource-group unet-segmentation-rg
+
+          # Attendre que l'app démarre
+          echo "Waiting for app to start..."
           sleep 30
 
-      # Nettoyage radical via l'API Kudu VFS
-      - name: Clean up files via Kudu API
-        run: |
-          USERNAME="${{ steps.get-publish-profile.outputs.username }}"
-          PASSWORD="${{ steps.get-publish-profile.outputs.password }}"
-          SCM_URL="${{ steps.get-publish-profile.outputs.scm_url }}"
-
-          echo "Cleaning up wwwroot directory..."
-
-          # Obtenir la liste des fichiers/dossiers dans wwwroot
-          FILES=$(curl -s -u "$USERNAME:$PASSWORD" "$SCM_URL/api/vfs/site/wwwroot/" | jq -r '.[].name')
-
-          # Supprimer chaque fichier/dossier individuellement
-          for FILE in $FILES; do
-            echo "Deleting $FILE..."
-            curl -X DELETE -u "$USERNAME:$PASSWORD" "$SCM_URL/api/vfs/site/wwwroot/$FILE"
-          done
-
-          echo "Waiting after cleanup..."
-          sleep 30
-
-      # Vérifier si le nettoyage a fonctionné
-      - name: Verify cleanup
-        run: |
-          USERNAME="${{ steps.get-publish-profile.outputs.username }}"
-          PASSWORD="${{ steps.get-publish-profile.outputs.password }}"
-          SCM_URL="${{ steps.get-publish-profile.outputs.scm_url }}"
-
-          REMAINING=$(curl -s -u "$USERNAME:$PASSWORD" "$SCM_URL/api/vfs/site/wwwroot/" | jq -r '.[].name')
-          echo "Remaining files in wwwroot: $REMAINING"
-
-      # Déployer via l'API ZIP de Kudu (méthode alternative)
-      - name: Deploy via Kudu ZIP API
-        run: |
-          USERNAME="${{ steps.get-publish-profile.outputs.username }}"
-          PASSWORD="${{ steps.get-publish-profile.outputs.password }}"
-          SCM_URL="${{ steps.get-publish-profile.outputs.scm_url }}"
-
-          echo "Deploying via Kudu ZIP API..."
-          curl -X POST -u "$USERNAME:$PASSWORD" \
-            --data-binary @deploy.zip \
-            "$SCM_URL/api/zipdeploy?isAsync=true"
-            
-          echo "Waiting for deployment to complete..."
-          sleep 60
-
-      # Redémarrer l'application
-      - name: Restart Web App
-        run: |
-          echo "Restarting web app..."
-          az webapp restart --name unet-segmentation-api --resource-group unet-segmentation-rg
+          # Vérifier les logs de l'application
+          echo "Checking application logs..."
+          az webapp log tail --name unet-segmentation-api --resource-group unet-segmentation-rg --timeout 60
