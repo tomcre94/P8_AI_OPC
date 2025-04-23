@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import os
 import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import base64
 import io
 import numpy as np

@@ -40,8 +40,7 @@ def find_model_path():
     
     # Chemins possibles où le modèle pourrait se trouver
     search_paths = [
-        # Chemins originaux
-        os.path.join("/home/site/wwwroot", "unet-segmentation-project", "models", "unet_mini_aug_best.h5"),
+        # Chemin original
         os.path.join("/home/site/wwwroot", "models", "unet_mini_aug_best.h5"),
         # Chemins après extraction ciblée
         os.path.join("/home/site/wwwroot", "unet_mini_aug_best.h5")
