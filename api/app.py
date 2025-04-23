@@ -16,11 +16,16 @@ CORS(app)
 cv2 = None
 tf = None
 model = None
+_model_extracted = False
 
-
-@app.before_first_request
+# Remplacer @app.before_first_request par cette fonction
 def extract_model_only():
     """Extrait uniquement le modèle et les fichiers Python essentiels de l'archive"""
+    global _model_extracted
+    if _model_extracted:
+        return
+        
+    _model_extracted = True
     import os
     import tarfile
     
@@ -72,6 +77,23 @@ def extract_model_only():
         print(f"Erreur lors de l'extraction: {str(e)}")
         import traceback
         print(traceback.format_exc())
+
+# Exécuter l'extraction au démarrage de l'application
+with app.app_context():
+    try:
+        extract_model_only()
+    except Exception as e:
+        print(f"Erreur lors de l'extraction au démarrage: {str(e)}")
+        traceback.print_exc()
+
+# Également s'assurer que l'extraction est tentée avant toute requête
+@app.before_request
+def ensure_model_extracted():
+    try:
+        extract_model_only()
+    except Exception as e:
+        print(f"Erreur lors de l'extraction avant requête: {str(e)}")
+        pass  # Ne pas bloquer les requêtes en cas d'erreur
 
 def load_dependencies():
     """Charge les dépendances lourdes uniquement à la demande"""
