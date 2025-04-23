@@ -54,8 +54,10 @@ jobs:
       - name: Verify deployment
         run: |
           echo "Checking deployment status..."
-          DEPLOY_STATUS=$(az webapp deployment list --name unet-segmentation-api --resource-group unet-segmentation-rg --output tsv --query "[0].status")
-          echo "Latest deployment status: $DEPLOY_STATUS"
+
+          # La commande correcte pour lister les déploiements
+          echo "Getting deployment history..."
+          az webapp deployment list-deployments --name unet-segmentation-api --resource-group unet-segmentation-rg
 
           # Obtenir les creds de publication pour vérifier les fichiers
           PUBLISH_PROFILE=$(az webapp deployment list-publishing-credentials --name unet-segmentation-api --resource-group unet-segmentation-rg --output json)
@@ -64,7 +66,10 @@ jobs:
 
           # Obtenir l'URL SCM correcte
           SCM_HOST=$(az webapp show --name unet-segmentation-api --resource-group unet-segmentation-rg --query defaultHostName --output tsv)
-          SCM_URL="https://${SCM_HOST/\.azurewebsites\.net/.scm.azurewebsites.net}"
+          # Corriger la syntaxe pour substituer le texte dans la variable
+          SCM_URL="https://${SCM_HOST/.azurewebsites.net/.scm.azurewebsites.net}"
+
+          echo "SCM URL: $SCM_URL"
 
           echo "Listing files in wwwroot to verify deployment..."
           curl -s -u "$USERNAME:$PASSWORD" "$SCM_URL/api/vfs/site/wwwroot/" | jq '.[].name'
