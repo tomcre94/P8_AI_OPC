@@ -95,7 +95,10 @@ jobs:
           # Attendre que l'app démarre
           echo "Waiting for app to start..."
           sleep 30
-
-          # Vérifier les logs de l'application
-          echo "Checking application logs..."
-          az webapp log tail --name unet-segmentation-api --resource-group unet-segmentation-rg --timeout 60
+      # Vérifier l'état des logs de l'application
+      - name: Check application logs (recent)
+        run: |
+          az webapp log download --resource-group unet-segmentation-rg --name unet-segmentation-api
+          unzip webapp_logs.zip -d logs
+          echo "Dernières lignes du log :"
+          tail -n 50 logs/**/default_docker.log || echo "Aucun log trouvé."
