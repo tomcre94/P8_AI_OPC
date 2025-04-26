@@ -23,15 +23,55 @@ CLASS_MAPPING = {
 }
 
 def map_masks(mask):
-    """Convertit les IDs du masque original vers les nouvelles classes"""
-    import numpy as np
-    out_mask = np.zeros(mask.shape, dtype=np.uint8)
+    """
+    Convertit un masque gtFine_labelIds en masque avec nos classes
     
-    # Mapper les classes connues
-    for k in CLASS_MAPPING:
-        out_mask[mask == k] = CLASS_MAPPING[k]
+    Notre mapping de classes:
+    0: Background
+    1: Road
+    2: Building
+    3: Vegetation
+    4: Car
+    5: Sidewalk
+    6: Sky  
+    7: Person
     
-    return out_mask
+    Les IDs Cityscapes importants:
+    0: Unlabeled -> 0 (Background)
+    1: Ego vehicle -> 0 (Background)
+    2: Rectification border -> 0 (Background)
+    3: Out of roi -> 0 (Background)
+    7: Road -> 1
+    11: Building -> 2
+    21: Vegetation -> 3
+    26: Car -> 4
+    8: Sidewalk -> 5
+    23: Sky -> 6
+    24: Person -> 7
+    """
+    mapped = np.zeros_like(mask)
+    
+    # Définir le mapping Cityscapes -> nos classes
+    # Format: {id_cityscapes: notre_id}
+    cityscapes_mapping = {
+        0: 0,   # Unlabeled -> Background
+        1: 0,   # Ego vehicle -> Background
+        2: 0,   # Rectification border -> Background
+        3: 0,   # Out of roi -> Background
+        7: 1,   # Road -> Road
+        11: 2,  # Building -> Building
+        21: 3,  # Vegetation -> Vegetation
+        26: 4,  # Car -> Car
+        8: 5,   # Sidewalk -> Sidewalk
+        23: 6,  # Sky -> Sky
+        24: 7,  # Person -> Person
+    }
+    
+    # Appliquer le mapping
+    for cityscapes_id, our_id in cityscapes_mapping.items():
+        mapped[mask == cityscapes_id] = our_id
+    
+    return mapped
 
 def find_model_path():
     """Recherche le modèle dans différents emplacements possibles"""

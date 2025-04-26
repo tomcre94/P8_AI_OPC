@@ -8,6 +8,7 @@ import numpy as np
 from flask_cors import CORS
 from PIL import Image
 import traceback
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 CORS(app)
@@ -17,8 +18,11 @@ cv2 = None
 tf = None
 model = None
 _model_extracted = False
+# Dossier pour stocker les exemples
+EXAMPLES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'examples')
+os.makedirs(EXAMPLES_DIR, exist_ok=True)
 
-# Remplacer @app.before_first_request par cette fonction
+## Configuration de l'application
 def extract_model_only():
     """Extrait uniquement le modèle et les fichiers Python essentiels de l'archive"""
     global _model_extracted
@@ -42,6 +46,16 @@ def extract_model_only():
         
     # Créer le dossier models s'il n'existe pas
     os.makedirs(model_dir, exist_ok=True)
+
+    # Liste des exemples prédéfinis
+    examples = [
+        {"id": "urban1", "name": "Scène urbaine 1", 
+        "image": "urban1.jpg", "mask": "urban1_gtFine_labelIds.png"},
+        {"id": "urban2", "name": "Scène urbaine 2", 
+        "image": "urban2.jpg", "mask": "urban2_gtFine_labelIds.png"},
+        {"id": "urban3", "name": "Scène urbaine 3", 
+        "image": "urban3.jpg", "mask": "urban3_gtFine_labelIds.png"},
+    ]
     
     try:
         print(f"Ouverture de l'archive {tar_path}")
@@ -114,6 +128,148 @@ def load_dependencies():
             print("Modèle chargé avec succès")
     
     return cv2, tf, model
+
+@app.route('/examples', methods=['GET'])
+def get_examples():
+    """Renvoie la liste des exemples disponibles"""
+    return jsonify({"success": True, "examples": examples})
+
+@app.route('/examples/<example_id>', methods=['GET'])
+def get_example_image(example_id):
+    """Renvoie l'image d'un exemple spécifique"""
+    example = next((e for e in examples if e['id'] == example_id), None)
+    if not example:
+        return jsonify({"success": False, "error": "Exemple non trouvé"}), 404
+    
+    try:
+        image_path = os.path.join(EXAMPLES_DIR, example['image'])
+        if not os.path.exists(image_path):
+            return jsonify({"success": False, "error": "Image non trouvée"}), 404
+            
+        with open(image_path, 'rb') as f:
+            image_data = f.read()
+        
+        return Response(image_data, mimetype='image/jpeg')
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/examples/<example_id>/mask', methods=['GET'])
+def get_example_mask(example_id):
+    """Renvoie le masque d'un exemple spécifique"""
+    example = next((e for e in examples if e['id'] == example_id), None)
+    if not example:
+        return jsonify({"success": False, "error": "Exemple non trouvé"}), 404
+    
+    try:
+        mask_path = os.path.join(EXAMPLES_DIR, example['mask'])
+        if not os.path.exists(mask_path):
+            return jsonify({"success": False, "error": "Masque non trouvé"}), 404
+            
+        with open(mask_path, 'rb') as f:
+            mask_data = f.read()
+        
+        return Response(mask_data, mimetype='image/png')
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/predict_example/<example_id>', methods=['GET'])
+def predict_example(example_id):
+    """Prédire la segmentation pour un exemple prédéfini"""
+    example = next((e for e in examples if e['id'] == example_id), None)
+    if not example:
+        return jsonify({"success": False, "error": "Exemple non trouvé"}), 404
+    
+    try:
+        # Charger l'image et le masque
+        image_path = os.path.join(EXAMPLES_DIR, example['image'])
+        mask_path = os.path.join(EXAMPLES_DIR, example['mask'])
+        
+        if not os.path.exists(image_path) or not os.path.exists(mask_path):
+            return jsonify({"success": False, "error": "Fichiers d'exemple non trouvés"}), 404
+        
+        # Charger les dépendances
+        cv2, tf, loaded_model = load_dependencies()
+        
+        # Lire l'image
+        image = cv2.imread(image_path)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # Lire le masque
+        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        
+        # Même traitement que dans predict_with_mask
+        from shared.config import IMG_HEIGHT, IMG_WIDTH, map_masks
+        
+        # Redimensionner l'image et le masque
+        resized_img = cv2.resize(image, (IMG_WIDTH, IMG_HEIGHT))
+        resized_mask = cv2.resize(mask, (IMG_WIDTH, IMG_HEIGHT), interpolation=cv2.INTER_NEAREST)
+        
+        # Mapper les classes du masque
+        mapped_mask = map_masks(resized_mask)
+        
+        # Normaliser l'image pour la prédiction
+        processed_img = resized_img / 255.0
+        
+        # Prédiction
+        prediction = loaded_model.predict(np.expand_dims(processed_img, axis=0))[0]
+        pred_mask = np.argmax(prediction, axis=-1)
+        
+        # Couleurs pour visualisation
+        colors = [
+            [0, 0, 0],        # Background
+            [128, 64, 128],   # Road
+            [244, 35, 232],   # Building
+            [70, 70, 70],     # Vegetation
+            [107, 142, 35],   # Car
+            [153, 153, 153],  # Sidewalk
+            [0, 191, 255],    # Sky
+            [220, 20, 60]     # Person
+        ]
+        
+        # Créer des masques colorisés
+        colored_pred_mask = np.zeros((*pred_mask.shape, 3), dtype=np.uint8)
+        colored_real_mask = np.zeros((*mapped_mask.shape, 3), dtype=np.uint8)
+        
+        for cls, color in enumerate(colors):
+            colored_pred_mask[pred_mask == cls] = color
+            colored_real_mask[mapped_mask == cls] = color
+        
+        # Convertir en base64
+        # Image originale
+        img_pil = Image.fromarray(resized_img)
+        img_io = io.BytesIO()
+        img_pil.save(img_io, 'JPEG')
+        img_io.seek(0)
+        img_base64 = base64.b64encode(img_io.getvalue()).decode('utf-8')
+        
+        # Masque réel
+        real_mask_pil = Image.fromarray(colored_real_mask)
+        real_io = io.BytesIO()
+        real_mask_pil.save(real_io, 'PNG')
+        real_io.seek(0)
+        real_mask_base64 = base64.b64encode(real_io.getvalue()).decode('utf-8')
+        
+        # Masque prédit
+        pred_mask_pil = Image.fromarray(colored_pred_mask)
+        pred_io = io.BytesIO()
+        pred_mask_pil.save(pred_io, 'PNG')
+        pred_io.seek(0)
+        pred_mask_base64 = base64.b64encode(pred_io.getvalue()).decode('utf-8')
+        
+        return jsonify({
+            "success": True,
+            "image_base64": img_base64,
+            "real_mask_base64": real_mask_base64,
+            "pred_mask_base64": pred_mask_base64
+        })
+        
+    except Exception as e:
+        print(f"Erreur dans predict_example: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -306,6 +462,22 @@ def index():
             </ol>
         </div>
         
+        <div class="example-section">
+            <h2>Exemples prédéfinis</h2>
+            <p>Sélectionnez une image d'exemple pour voir le résultat de la segmentation:</p>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <select id="exampleSelect" class="form-control">
+                    <option value="">Choisir un exemple...</option>
+                    <!-- Options seront ajoutées dynamiquement -->
+                </select>
+                <button id="loadExampleBtn" class="btn btn-primary" disabled>Charger l'exemple</button>
+            </div>
+        </div>
+
+        <div style="border-top: 1px solid #ddd; margin: 30px 0; padding-top: 20px;">
+            <h2>Téléverser vos propres images</h2>
+        </div>
+
         <div class="upload-section">
             <div class="dropzone-section">
                 <h3>Image</h3>
@@ -337,16 +509,16 @@ def index():
         
         <div class="results-grid">
             <div class="result-card">
-                <h3>Image originale</h3>
                 <img id="resultOriginal" style="max-width: 100%; max-height: 300px; display: none;">
+                <h3>Image originale</h3>
             </div>
             <div class="result-card">
-                <h3>Masque réel</h3>
                 <img id="resultRealMask" style="max-width: 100%; max-height: 300px; display: none;">
+                <h3>Masque réel</h3>
             </div>
             <div class="result-card">
-                <h3>Masque prédit</h3>
                 <img id="resultPredictedMask" style="max-width: 100%; max-height: 300px; display: none;">
+                <h3>Masque prédit</h3>
             </div>
         </div>
         
@@ -460,7 +632,64 @@ def index():
                     reader.readAsDataURL(file);
                 }
             }
-            
+            // Charger la liste des exemples disponibles
+            window.addEventListener('DOMContentLoaded', async () => {
+                try {
+                    const response = await fetch('/examples');
+                    const data = await response.json();
+                    
+                    const selectElement = document.getElementById('exampleSelect');
+                    if (data.examples && data.examples.length > 0) {
+                        data.examples.forEach(example => {
+                            const option = document.createElement('option');
+                            option.value = example.id;
+                            option.textContent = example.name;
+                            selectElement.appendChild(option);
+                        });
+                    }
+                } catch (error) {
+                    console.error('Erreur lors du chargement des exemples:', error);
+                }
+            });
+
+            // Activer/désactiver le bouton en fonction de la sélection
+            document.getElementById('exampleSelect').addEventListener('change', function() {
+                document.getElementById('loadExampleBtn').disabled = !this.value;
+            });
+
+            // Charger l'exemple sélectionné
+            document.getElementById('loadExampleBtn').addEventListener('click', async () => {
+                const exampleId = document.getElementById('exampleSelect').value;
+                if (!exampleId) return;
+                
+                loader.style.display = 'block';
+                
+                try {
+                    const response = await fetch(`/predict_example/${exampleId}`);
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        // Afficher l'image originale
+                        resultOriginal.src = `data:image/jpeg;base64,${data.image_base64}`;
+                        resultOriginal.style.display = 'block';
+                        
+                        // Afficher le masque réel
+                        resultRealMask.src = `data:image/png;base64,${data.real_mask_base64}`;
+                        resultRealMask.style.display = 'block';
+                        
+                        // Afficher le masque prédit
+                        resultPredictedMask.src = `data:image/png;base64,${data.pred_mask_base64}`;
+                        resultPredictedMask.style.display = 'block';
+                    } else {
+                        alert(`Erreur: ${data.error || 'Échec du chargement de l\'exemple'}`);
+                    }
+                } catch (error) {
+                    console.error('Erreur:', error);
+                    alert(`Erreur lors du chargement de l'exemple: ${error.message}`);
+                } finally {
+                    loader.style.display = 'none';
+                }
+            });
             // Activer le bouton de prédiction si les deux fichiers sont disponibles
             function checkEnablePredictButton() {
                 predictBtn.disabled = !(currentImageFile && currentMaskFile);
