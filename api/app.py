@@ -101,6 +101,7 @@ def load_dependencies():
     
     # Importer numpy explicitement
     import numpy
+    import builtins
     np = numpy
     builtins.np = numpy
     
