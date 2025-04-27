@@ -50,11 +50,11 @@ def extract_model_only():
     # Liste des exemples prédéfinis
     examples = [
         {"id": "urban1", "name": "Scène urbaine 1", 
-        "image": "urban1.jpg", "mask": "urban1_gtFine_labelIds.png"},
+        "image": "berlin_000002_000019_leftImg8bit.jpg", "mask": "berlin_000002_000019_gtFine_labelIds.png"},
         {"id": "urban2", "name": "Scène urbaine 2", 
-        "image": "urban2.jpg", "mask": "urban2_gtFine_labelIds.png"},
+        "image": "berlin_000033_000019_leftImg8bit.jpg", "mask": "berlin_000033_000019_gtFine_labelIds.png"},
         {"id": "urban3", "name": "Scène urbaine 3", 
-        "image": "urban3.jpg", "mask": "urban3_gtFine_labelIds.png"},
+        "image": "berlin_000040_000019_leftImg8bit.jpg", "mask": "berlin_000040_000019_gtFine_labelIds.png"},
     ]
     
     try:
