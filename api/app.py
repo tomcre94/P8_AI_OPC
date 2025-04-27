@@ -417,6 +417,357 @@ def get_image(image_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/predict_with_mask', methods=['POST'])
+def predict_with_mask():
+    """Endpoint qui prédit la segmentation et compare avec un masque réel"""
+    try:
+        # Vérifier d'abord que les fichiers ont été fournis
+        if 'image' not in request.files or 'mask' not in request.files:
+            return jsonify({
+                "success": False, 
+                "error": "L'image et le masque sont requis"
+            }), 400
+        
+        # Récupérer les fichiers
+        image_file = request.files['image']
+        mask_file = request.files['mask']
+        
+        print(f"Fichier image reçu: {image_file.filename}, type: {image_file.content_type}")
+        print(f"Fichier masque reçu: {mask_file.filename}, type: {mask_file.content_type}")
+        
+        # Charger les dépendances seulement lorsque nécessaire
+        cv2, tf, loaded_model = load_dependencies()
+        
+        # Traiter l'image
+        in_memory_file = io.BytesIO()
+        image_file.save(in_memory_file)
+        data = np.frombuffer(in_memory_file.getvalue(), dtype=np.uint8)
+        image = cv2.imdecode(data, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            return jsonify({"success": False, "error": "Impossible de décoder l'image"}), 400
+            
+        # Traiter le masque
+        mask_in_memory = io.BytesIO()
+        mask_file.save(mask_in_memory)
+        mask_data = np.frombuffer(mask_in_memory.getvalue(), dtype=np.uint8)
+        mask = cv2.imdecode(mask_data, cv2.IMREAD_GRAYSCALE)
+        
+        if mask is None:
+            return jsonify({"success": False, "error": "Impossible de décoder le masque"}), 400
+            
+        # Convertir BGR en RGB pour l'image
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # Charger la configuration
+        from shared.config import IMG_HEIGHT, IMG_WIDTH, map_masks
+        
+        # Redimensionner l'image et le masque
+        resized_img = cv2.resize(image, (IMG_WIDTH, IMG_HEIGHT))
+        resized_mask = cv2.resize(mask, (IMG_WIDTH, IMG_HEIGHT), interpolation=cv2.INTER_NEAREST)
+        
+        # Mapper les classes du masque selon votre mapping
+        mapped_mask = map_masks(resized_mask)
+        
+        # Normaliser l'image pour la prédiction
+        processed_img = resized_img / 255.0
+        
+        # Prédiction
+        prediction = loaded_model.predict(np.expand_dims(processed_img, axis=0))[0]
+        pred_mask = np.argmax(prediction, axis=-1)
+        
+        # Couleurs pour visualisation
+        colors = [
+            [0, 0, 0],        # Background
+            [128, 64, 128],   # Road
+            [244, 35, 232],   # Building
+            [70, 70, 70],     # Vegetation
+            [107, 142, 35],   # Car
+            [153, 153, 153],  # Sidewalk
+            [0, 191, 255],    # Sky
+            [220, 20, 60]     # Person
+        ]
+        
+        # Créer des masques colorisés
+        colored_pred_mask = np.zeros((*pred_mask.shape, 3), dtype=np.uint8)
+        colored_real_mask = np.zeros((*mapped_mask.shape, 3), dtype=np.uint8)
+        
+        for cls, color in enumerate(colors):
+            colored_pred_mask[pred_mask == cls] = color
+            colored_real_mask[mapped_mask == cls] = color
+            
+        # Convertir en images PNG puis en base64
+        pred_mask_pil = Image.fromarray(colored_pred_mask)
+        real_mask_pil = Image.fromarray(colored_real_mask)
+        
+        pred_img_io = io.BytesIO()
+        real_img_io = io.BytesIO()
+        
+        pred_mask_pil.save(pred_img_io, 'PNG')
+        real_mask_pil.save(real_img_io, 'PNG')
+        
+        pred_img_io.seek(0)
+        real_img_io.seek(0)
+        
+        pred_mask_base64 = base64.b64encode(pred_img_io.getvalue()).decode('utf-8')
+        real_mask_base64 = base64.b64encode(real_img_io.getvalue()).decode('utf-8')
+        
+        # Calculer des métriques de comparaison
+        intersection = np.logical_and(pred_mask, mapped_mask)
+        union = np.logical_or(pred_mask, mapped_mask)
+        iou = np.sum(intersection) / np.sum(union) if np.sum(union) > 0 else 0
+        
+        accuracy = np.mean(pred_mask == mapped_mask)
+        
+        return jsonify({
+            "success": True,
+            "pred_mask_base64": pred_mask_base64,
+            "real_mask_base64": real_mask_base64,
+            "metrics": {
+                "iou": float(iou),
+                "accuracy": float(accuracy)
+            }
+        })
+        
+    except Exception as e:
+        print(f"Erreur dans predict_with_mask: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """Gère toutes les exceptions non capturées et renvoie un JSON"""
+    print(f"Erreur non gérée: {str(e)}")
+    print(traceback.format_exc())
+    return jsonify({
+        "success": False,
+        "error": str(e),
+        "trace": traceback.format_exc()
+    }), 500
+
+@app.route('/model_status', methods=['GET'])
+def model_status():
+    """Vérifier l'état du modèle"""
+    try:
+        from shared.config import MODEL_PATH
+        model_exists = os.path.exists(MODEL_PATH)
+        model_path = MODEL_PATH
+        
+        # Vérifier si le dossier parent existe
+        parent_dir = os.path.dirname(MODEL_PATH)
+        parent_exists = os.path.exists(parent_dir)
+        
+        # Lister les fichiers dans le dossier parent s'il existe
+        parent_contents = os.listdir(parent_dir) if parent_exists else []
+        
+        # Vérifier si TensorFlow peut être importé
+        tf_imported = False
+        tf_version = None
+        try:
+            import tensorflow as tf
+            tf_imported = True
+            tf_version = tf.__version__
+        except Exception as tf_err:
+            tf_version = f"Error: {str(tf_err)}"
+        
+        return jsonify({
+            "success": True,
+            "model_exists": model_exists,
+            "model_path": model_path,
+            "parent_dir_exists": parent_exists,
+            "parent_dir_contents": parent_contents,
+            "tensorflow_imported": tf_imported,
+            "tensorflow_version": tf_version,
+            "python_version": sys.version
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "trace": traceback.format_exc()
+        })
+
+if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
+# Également s'assurer que l'extraction est tentée avant toute requête
+@app.before_request
+def ensure_model_extracted():
+    try:
+        extract_model_only()
+    except Exception as e:
+        print(f"Erreur lors de l'extraction avant requête: {str(e)}")
+        pass  # Ne pas bloquer les requêtes en cas d'erreur
+
+def load_dependencies():
+    """Charge les dépendances lourdes uniquement à la demande"""
+    global cv2, tf, model
+    if cv2 is None:
+        print("Chargement de cv2...")
+        import cv2
+    
+    if tf is None:
+        print("Chargement de tensorflow...")
+        import tensorflow as tf
+        from shared.config import MODEL_PATH, IMG_HEIGHT, IMG_WIDTH
+        
+        # Chargement du modèle
+        if model is None and os.path.exists(MODEL_PATH):
+            print(f"Chargement du modèle depuis {MODEL_PATH}")
+            model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+            print("Modèle chargé avec succès")
+    
+    return cv2, tf, model
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Endpoint de santé qui vérifie si l'API est en ligne"""
+    try:
+        from shared.config import MODEL_PATH
+        model_exists = os.path.exists(MODEL_PATH)
+        
+        # Liste des répertoires à la racine
+        root_dirs = []
+        try:
+            root_dirs = os.listdir("/home/site/wwwroot")
+        except:
+            root_dirs = ["Impossible de lister le répertoire"]
+        
+        # Tester l'import de dépendances critiques
+        dependency_status = {}
+        for module in ["numpy", "cv2", "tensorflow", "PIL"]:
+            try:
+                __import__(module)
+                dependency_status[module] = "OK"
+            except Exception as e:
+                dependency_status[module] = f"Erreur: {str(e)}"
+        
+        return jsonify({
+            "status": "healthy", 
+            "model": "unet_mini_lightweight", 
+            "model_exists": model_exists,
+            "model_path": MODEL_PATH,
+            "root_dirs": root_dirs,
+            "dependencies": dependency_status,
+            "python_version": sys.version
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "error": str(e),
+            "trace": traceback.format_exc()
+        })
+
+@app.route('/predict', methods=['POST'])
+def predict():
+    """Endpoint qui prédit la segmentation d'une image"""
+    try:
+        # Charger les dépendances seulement lorsque nécessaire
+        cv2, tf, loaded_model = load_dependencies()
+        
+        # Vérifier si l'image est présente
+        if 'image' not in request.files and (not request.json or 'image' not in request.json):
+            return jsonify({"success": False, "error": "Aucune image fournie"}), 400
+        
+        # Récupérer l'image depuis la requête
+        if 'image' in request.files:
+            # Depuis FormData
+            file = request.files['image']
+            in_memory_file = io.BytesIO()
+            file.save(in_memory_file)
+            data = np.frombuffer(in_memory_file.getvalue(), dtype=np.uint8)
+            image = cv2.imdecode(data, cv2.IMREAD_COLOR)
+        else:
+            # Depuis JSON avec base64
+            image_data = base64.b64decode(request.json['image'])
+            nparr = np.frombuffer(image_data, np.uint8)
+            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        # Vérifier si l'image a été correctement chargée
+        if image is None:
+            return jsonify({"success": False, "error": "Impossible de décoder l'image"}), 400
+        
+        # Convertir BGR en RGB
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # Redimensionner l'image
+        from shared.config import IMG_HEIGHT, IMG_WIDTH
+        resized_img = cv2.resize(image, (IMG_WIDTH, IMG_HEIGHT))
+        
+        # Normaliser l'image
+        processed_img = resized_img / 255.0
+        
+        # Prédiction
+        prediction = loaded_model.predict(np.expand_dims(processed_img, axis=0))[0]
+        pred_mask = np.argmax(prediction, axis=-1)
+        
+        # Créer un masque coloré
+        colors = [
+            [0, 0, 0],        # Background
+            [128, 64, 128],   # Road
+            [244, 35, 232],   # Building
+            [70, 70, 70],     # Vegetation
+            [107, 142, 35],   # Car
+            [153, 153, 153],  # Sidewalk
+            [0, 191, 255],    # Sky
+            [220, 20, 60]     # Person
+        ]
+        
+        colored_mask = np.zeros((*pred_mask.shape, 3), dtype=np.uint8)
+        for cls, color in enumerate(colors):
+            colored_mask[pred_mask == cls] = color
+            
+        # Convertir en image PNG
+        img_pil = Image.fromarray(colored_mask)
+        img_io = io.BytesIO()
+        img_pil.save(img_io, 'PNG')
+        img_io.seek(0)
+        
+        # Encoder en base64 pour la réponse JSON
+        mask_base64 = base64.b64encode(img_io.getvalue()).decode('utf-8')
+        
+        return jsonify({
+            "success": True,
+            "mask_base64": mask_base64,
+            "classes_found": np.unique(pred_mask).tolist()
+        })
+        
+    except Exception as e:
+        import traceback
+        # Log l'erreur complète pour le débogage
+        print(f"Erreur lors de la prédiction: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": f"Erreur lors du traitement: {str(e)}"
+        }), 500
+
+@app.route("/sample_images", methods=["GET"])
+def get_sample_images():
+    # Retourne une liste d'IDs d'images de test disponibles
+    try:
+        # Dans un cas réel, vous chargeriez ceci depuis une base de données
+        # Pour l'exemple, nous retournons une liste statique
+        return jsonify({
+            "success": True,
+            "image_ids": ["sample1", "sample2", "sample3"]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/image/<image_id>", methods=["GET"])
+def get_image(image_id):
+    # Cette route servirait à récupérer une image spécifique
+    try:
+        # Pour un exemple simple, on retourne juste une erreur
+        # Dans un cas réel, vous récupéreriez l'image depuis un stockage
+        return jsonify({"error": "Cette fonctionnalité n'est pas encore implémentée"}), 501
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 # Ajouter une route pour servir une page HTML simple
 @app.route('/', methods=['GET'])
 def index():
@@ -460,22 +811,6 @@ def index():
                 <li>Téléchargez le masque de vérité terrain correspondant (format <code>*_gtFine_labelIds.png</code>)</li>
                 <li>Cliquez sur "Lancer la prédiction" pour voir la segmentation générée par le modèle</li>
             </ol>
-        </div>
-        
-        <div class="example-section">
-            <h2>Exemples prédéfinis</h2>
-            <p>Sélectionnez une image d'exemple pour voir le résultat de la segmentation:</p>
-            <div style="display: flex; align-items: center; gap: 10px;">
-                <select id="exampleSelect" class="form-control">
-                    <option value="">Choisir un exemple...</option>
-                    <!-- Options seront ajoutées dynamiquement -->
-                </select>
-                <button id="loadExampleBtn" class="btn btn-primary" disabled>Charger l'exemple</button>
-            </div>
-        </div>
-
-        <div style="border-top: 1px solid #ddd; margin: 30px 0; padding-top: 20px;">
-            <h2>Téléverser vos propres images</h2>
         </div>
 
         <div class="upload-section">
@@ -632,64 +967,7 @@ def index():
                     reader.readAsDataURL(file);
                 }
             }
-            // Charger la liste des exemples disponibles
-            window.addEventListener('DOMContentLoaded', async () => {
-                try {
-                    const response = await fetch('/examples');
-                    const data = await response.json();
-                    
-                    const selectElement = document.getElementById('exampleSelect');
-                    if (data.examples && data.examples.length > 0) {
-                        data.examples.forEach(example => {
-                            const option = document.createElement('option');
-                            option.value = example.id;
-                            option.textContent = example.name;
-                            selectElement.appendChild(option);
-                        });
-                    }
-                } catch (error) {
-                    console.error('Erreur lors du chargement des exemples:', error);
-                }
-            });
-
-            // Activer/désactiver le bouton en fonction de la sélection
-            document.getElementById('exampleSelect').addEventListener('change', function() {
-                document.getElementById('loadExampleBtn').disabled = !this.value;
-            });
-
-            // Charger l'exemple sélectionné
-            document.getElementById('loadExampleBtn').addEventListener('click', async () => {
-                const exampleId = document.getElementById('exampleSelect').value;
-                if (!exampleId) return;
-                
-                loader.style.display = 'block';
-                
-                try {
-                    const response = await fetch(`/predict_example/${exampleId}`);
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        // Afficher l'image originale
-                        resultOriginal.src = `data:image/jpeg;base64,${data.image_base64}`;
-                        resultOriginal.style.display = 'block';
-                        
-                        // Afficher le masque réel
-                        resultRealMask.src = `data:image/png;base64,${data.real_mask_base64}`;
-                        resultRealMask.style.display = 'block';
-                        
-                        // Afficher le masque prédit
-                        resultPredictedMask.src = `data:image/png;base64,${data.pred_mask_base64}`;
-                        resultPredictedMask.style.display = 'block';
-                    } else {
-                        alert(`Erreur: ${data.error || 'Échec du chargement de l\'exemple'}`);
-                    }
-                } catch (error) {
-                    console.error('Erreur:', error);
-                    alert(`Erreur lors du chargement de l'exemple: ${error.message}`);
-                } finally {
-                    loader.style.display = 'none';
-                }
-            });
+            
             // Activer le bouton de prédiction si les deux fichiers sont disponibles
             function checkEnablePredictButton() {
                 predictBtn.disabled = !(currentImageFile && currentMaskFile);
@@ -797,6 +1075,10 @@ def predict_with_mask():
         
         if mask is None:
             return jsonify({"success": False, "error": "Impossible de décoder le masque"}), 400
+        
+        # Afficher les valeurs uniques dans le masque pour le débogage
+        unique_mask_values = np.unique(mask)
+        print(f"Valeurs uniques dans le masque original: {unique_mask_values}")
             
         # Convertir BGR en RGB pour l'image
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -810,6 +1092,10 @@ def predict_with_mask():
         
         # Mapper les classes du masque selon votre mapping
         mapped_mask = map_masks(resized_mask)
+        
+        # Vérifier les valeurs du masque mappé
+        unique_mapped_values = np.unique(mapped_mask)
+        print(f"Valeurs uniques dans le masque mappé: {unique_mapped_values}")
         
         # Normaliser l'image pour la prédiction
         processed_img = resized_img / 255.0
@@ -855,18 +1141,37 @@ def predict_with_mask():
         real_mask_base64 = base64.b64encode(real_img_io.getvalue()).decode('utf-8')
         
         # Calculer des métriques de comparaison
-        intersection = np.logical_and(pred_mask, mapped_mask)
-        union = np.logical_or(pred_mask, mapped_mask)
-        iou = np.sum(intersection) / np.sum(union) if np.sum(union) > 0 else 0
-        
+        # Note: On utilise la classe comme index pour la comparaison
         accuracy = np.mean(pred_mask == mapped_mask)
+        
+        # Calcul de l'IoU pour chaque classe et moyenne
+        iou_per_class = {}
+        mean_iou = 0
+        num_classes = 0
+        
+        for cls in range(8):  # Pour les 8 classes
+            true_class = (mapped_mask == cls)
+            pred_class = (pred_mask == cls)
+            
+            intersection = np.logical_and(true_class, pred_class).sum()
+            union = np.logical_or(true_class, pred_class).sum()
+            
+            if union > 0:
+                iou = intersection / union
+                iou_per_class[int(cls)] = float(iou)
+                mean_iou += iou
+                num_classes += 1
+        
+        if num_classes > 0:
+            mean_iou = mean_iou / num_classes
         
         return jsonify({
             "success": True,
             "pred_mask_base64": pred_mask_base64,
             "real_mask_base64": real_mask_base64,
             "metrics": {
-                "iou": float(iou),
+                "iou": float(mean_iou),
+                "iou_per_class": iou_per_class,
                 "accuracy": float(accuracy)
             }
         })
