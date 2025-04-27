@@ -97,7 +97,12 @@ def ensure_model_extracted():
 
 def load_dependencies():
     """Charge les dépendances lourdes uniquement à la demande"""
-    global cv2, tf, model
+    global cv2, tf, model, np
+    
+    # Importer numpy explicitement
+    import numpy
+    np = numpy
+    
     if cv2 is None:
         print("Chargement de cv2...")
         import cv2
@@ -113,7 +118,7 @@ def load_dependencies():
             model = tf.keras.models.load_model(MODEL_PATH, compile=False)
             print("Modèle chargé avec succès")
     
-    return cv2, tf, model
+    return cv2, tf, model, np
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -159,7 +164,7 @@ def predict():
     """Endpoint qui prédit la segmentation d'une image"""
     try:
         # Charger les dépendances seulement lorsque nécessaire
-        cv2, tf, loaded_model = load_dependencies()
+        cv2, tf, loaded_model, np = load_dependencies()
         
         # Vérifier si l'image est présente
         if 'image' not in request.files and (not request.json or 'image' not in request.json):
@@ -256,8 +261,8 @@ def predict_with_mask():
         print(f"Fichier masque reçu: {mask_file.filename}, type: {mask_file.content_type}")
         
         # Charger les dépendances seulement lorsque nécessaire
-        cv2, tf, loaded_model = load_dependencies()
-        
+        cv2, tf, loaded_model, np = load_dependencies()
+                
         # Traiter l'image
         in_memory_file = io.BytesIO()
         image_file.save(in_memory_file)
