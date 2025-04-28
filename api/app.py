@@ -289,7 +289,8 @@ def predict_with_mask():
         mask_in_memory = io.BytesIO()
         mask_file.save(mask_in_memory)
         mask_data = np.frombuffer(mask_in_memory.getvalue(), dtype=np.uint8)
-        mask = cv2.imdecode(mask_data, cv2.IMREAD_GRAYSCALE)
+        # Important: Si le masque a des valeurs > 255, utilisons cv2.IMREAD_UNCHANGED au lieu de GRAYSCALE
+        mask = cv2.imdecode(mask_data, cv2.IMREAD_UNCHANGED)
         
         if mask is None:
             return jsonify({"success": False, "error": "Impossible de décoder le masque"}), 400
@@ -297,19 +298,60 @@ def predict_with_mask():
         # Afficher les valeurs uniques dans le masque pour le débogage
         unique_mask_values = np.unique(mask)
         print(f"Valeurs uniques dans le masque original: {unique_mask_values}")
-            
-        # Convertir BGR en RGB pour l'image
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
         # Charger la configuration
-        from shared.config import IMG_HEIGHT, IMG_WIDTH, map_masks
+        from shared.config import IMG_HEIGHT, IMG_WIDTH
+        
+        # Définir notre propre fonction de mapping ici pour éviter les problèmes d'importation
+        def cityscapes_to_model_classes(cityscapes_mask):
+            """
+            Convertit les ID des masques Cityscapes gtFine_labelIds vers les 8 classes du modèle
+            
+            Classes du modèle:
+            0: Background, 1: Road, 2: Building, 3: Vegetation, 
+            4: Car, 5: Sidewalk, 6: Sky, 7: Person
+            """
+            # Créer un masque vide avec la même forme
+            model_mask = np.zeros_like(cityscapes_mask)
+            
+            # Mapping des étiquettes Cityscapes vers nos 8 classes
+            # Référence: https://github.com/mcordts/cityscapesScripts/blob/master/cityscapesscripts/helpers/labels.py
+            
+            # Road (7) -> 1
+            model_mask[cityscapes_mask == 7] = 1
+            
+            # Building (11) -> 2
+            model_mask[cityscapes_mask == 11] = 2
+            
+            # Vegetation (21, 22) -> 3
+            model_mask[cityscapes_mask == 21] = 3  # Tree
+            model_mask[cityscapes_mask == 22] = 3  # Vegetation
+            
+            # Car (26) -> 4
+            model_mask[cityscapes_mask == 26] = 4
+            
+            # Sidewalk (8) -> 5
+            model_mask[cityscapes_mask == 8] = 5
+            
+            # Sky (23) -> 6
+            model_mask[cityscapes_mask == 23] = 6
+            
+            # Person (24) -> 7
+            model_mask[cityscapes_mask == 24] = 7
+            
+            # Tout le reste -> 0 (background, déjà initialisé à 0)
+            
+            return model_mask
+        
+        # Convertir BGR en RGB pour l'image
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
         # Redimensionner l'image et le masque
         resized_img = cv2.resize(image, (IMG_WIDTH, IMG_HEIGHT))
         resized_mask = cv2.resize(mask, (IMG_WIDTH, IMG_HEIGHT), interpolation=cv2.INTER_NEAREST)
         
-        # Mapper les classes du masque selon votre mapping
-        mapped_mask = map_masks(resized_mask)
+        # Mapper les classes du masque avec notre nouvelle fonction
+        mapped_mask = cityscapes_to_model_classes(resized_mask)
         
         # Vérifier les valeurs du masque mappé
         unique_mapped_values = np.unique(mapped_mask)
@@ -341,7 +383,7 @@ def predict_with_mask():
         for cls, color in enumerate(colors):
             colored_pred_mask[pred_mask == cls] = color
             colored_real_mask[mapped_mask == cls] = color
-            
+                       
         # Convertir en images PNG puis en base64
         pred_mask_pil = Image.fromarray(colored_pred_mask)
         real_mask_pil = Image.fromarray(colored_real_mask)
