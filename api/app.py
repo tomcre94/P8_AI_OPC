@@ -321,20 +321,12 @@ def predict_with_mask():
 
         print(f"Masque format OpenCV: {mask.dtype}, plage: {mask.min()}-{mask.max()}")
 
-        print(f"Format du masque chargé: {mask_pil.mode}, dtype: {mask.dtype}")
         print(f"Dimensions du masque: {mask.shape}")
 
         # Afficher les valeurs uniques dans le masque pour le débogage
         unique_mask_values = np.unique(mask)
         print(f"Valeurs uniques dans le masque original: {unique_mask_values}")
-
-        # Si le masque est en mode palette, convertir en raster
-        if mask_pil.mode == 'P':
-            print("Conversion du masque en mode palette vers raster...")
-            mask_pil = mask_pil.convert('L')
-            mask = np.array(mask_pil)
-            print(f"Nouvelles valeurs uniques après conversion: {np.unique(mask)}")
-        
+       
         # Charger la configuration
         from shared.config import IMG_HEIGHT, IMG_WIDTH
         
