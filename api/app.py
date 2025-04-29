@@ -309,14 +309,17 @@ def predict_with_mask():
         if image is None:
             return jsonify({"success": False, "error": "Impossible de décoder l'image"}), 400
             
-        # Traiter le masque
+        # Charger le masque avec OpenCV pour plus de cohérence avec l'entraînement
         mask_in_memory = io.BytesIO()
         mask_file.save(mask_in_memory)
-        mask_in_memory.seek(0)  # Important: revenir au début du flux
+        mask_data = np.frombuffer(mask_in_memory.getvalue(), dtype=np.uint8)
+        mask = cv2.imdecode(mask_data, cv2.IMREAD_UNCHANGED)
 
-        # Utiliser PIL pour charger le masque et préserver le type original
-        mask_pil = Image.open(mask_in_memory)
-        mask = np.array(mask_pil)
+        # Si c'est une image RGB, la convertir en grayscale
+        if len(mask.shape) == 3 and mask.shape[2] >= 3:
+            mask = cv2.cvtColor(mask, cv2.COLOR_RGB2GRAY)
+
+        print(f"Masque format OpenCV: {mask.dtype}, plage: {mask.min()}-{mask.max()}")
 
         print(f"Format du masque chargé: {mask_pil.mode}, dtype: {mask.dtype}")
         print(f"Dimensions du masque: {mask.shape}")
@@ -435,10 +438,16 @@ def predict_with_mask():
         print(f"Classes dans la prédiction: {pred_classes}")
         print(f"Classes dans le masque réel: {real_classes}")
 
-        # Une seule boucle pour appliquer les couleurs
-        for cls, color in enumerate(colors):
-            colored_pred_mask[pred_mask == cls] = color
-            colored_real_mask[mapped_mask == cls] = color
+        # Définir les classes attendues après mapping
+        target_classes = [0, 1, 2, 3, 4, 5, 6, 7]  # Background, Road, Building, etc.
+
+        # Application des couleurs pour chaque classe
+        for i, cls in enumerate(target_classes):
+            # Vérifier si la classe existe dans le masque avant de l'appliquer
+            if cls in pred_classes:
+                colored_pred_mask[pred_mask == cls] = colors[i]
+            if cls in real_classes:
+                colored_real_mask[mapped_mask == cls] = colors[i]
                        
         # Convertir en images PNG puis en base64
         pred_mask_pil = Image.fromarray(colored_pred_mask)
