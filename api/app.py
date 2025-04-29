@@ -428,13 +428,14 @@ def predict_with_mask():
         # Créer des masques colorisés
         colored_pred_mask = np.zeros((*pred_mask.shape, 3), dtype=np.uint8)
         colored_real_mask = np.zeros((*mapped_mask.shape, 3), dtype=np.uint8)
-        # Application des couleurs pour chaque classe
-        for cls, color in enumerate(colors):
-            # Vérifier si la classe existe dans le masque avant de l'appliquer
-            if cls in np.unique(pred_mask):
-                colored_pred_mask[pred_mask == cls] = color
-            if cls in np.unique(mapped_mask):
-                colored_real_mask[mapped_mask == cls] = color
+
+        # Debug: afficher les classes trouvées 
+        pred_classes = np.unique(pred_mask)
+        real_classes = np.unique(mapped_mask)
+        print(f"Classes dans la prédiction: {pred_classes}")
+        print(f"Classes dans le masque réel: {real_classes}")
+
+        # Une seule boucle pour appliquer les couleurs
         for cls, color in enumerate(colors):
             colored_pred_mask[pred_mask == cls] = color
             colored_real_mask[mapped_mask == cls] = color
