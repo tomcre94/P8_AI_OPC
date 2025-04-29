@@ -331,14 +331,6 @@ def predict_with_mask():
             mask_pil = mask_pil.convert('L')
             mask = np.array(mask_pil)
             print(f"Nouvelles valeurs uniques après conversion: {np.unique(mask)}")
-
-        # Application des couleurs pour chaque classe
-        for cls, color in enumerate(colors):
-            # Vérifier si la classe existe dans le masque avant de l'appliquer
-            if cls in np.unique(pred_mask):
-                colored_pred_mask[pred_mask == cls] = color
-            if cls in np.unique(mapped_mask):
-                colored_real_mask[mapped_mask == cls] = color
         
         # Charger la configuration
         from shared.config import IMG_HEIGHT, IMG_WIDTH
@@ -436,7 +428,13 @@ def predict_with_mask():
         # Créer des masques colorisés
         colored_pred_mask = np.zeros((*pred_mask.shape, 3), dtype=np.uint8)
         colored_real_mask = np.zeros((*mapped_mask.shape, 3), dtype=np.uint8)
-        
+        # Application des couleurs pour chaque classe
+        for cls, color in enumerate(colors):
+            # Vérifier si la classe existe dans le masque avant de l'appliquer
+            if cls in np.unique(pred_mask):
+                colored_pred_mask[pred_mask == cls] = color
+            if cls in np.unique(mapped_mask):
+                colored_real_mask[mapped_mask == cls] = color
         for cls, color in enumerate(colors):
             colored_pred_mask[pred_mask == cls] = color
             colored_real_mask[mapped_mask == cls] = color
