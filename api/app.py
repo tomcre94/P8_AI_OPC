@@ -10,6 +10,30 @@ from PIL import Image
 import traceback
 from werkzeug.utils import secure_filename
 
+
+# Configuration des classes Cityscapes pour le mapping
+CLASS_MAPPING = {
+    # Classes de fond
+    0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 9: 0, 10: 0,
+    12: 0, 13: 0, 15: 0, 16: 0, 19: 0, 20: 0, 22: 0,
+    25: 0, 27: 0, 32: 0,
+    
+    # Classes principales (par ordre d'importance/fréquence)
+    7: 1,   # Road (~33%)
+    11: 2,  # Building (~20%)
+    21: 3,  # Vegetation (~15%)
+    26: 4,  # Car (~6%)
+    8: 5,   # Sidewalk (~5%)
+    23: 6,  # Sky (~3.5%)
+    24: 7,  # Person (~1.2%)
+    
+    # Classes à considérer pour un mapping futur
+    28: 0,  # Bus (~0.2%)
+    31: 0,  # Train (~0.1%)
+    33: 0,  # Bicycle (~0.4%)
+    17: 0   # Pole (~1.1%)
+}
+
 app = Flask(__name__)
 CORS(app)
 
@@ -288,41 +312,72 @@ def predict_with_mask():
         # Traiter le masque
         mask_in_memory = io.BytesIO()
         mask_file.save(mask_in_memory)
-        mask_data = np.frombuffer(mask_in_memory.getvalue(), dtype=np.uint8)
-        # Important: Si le masque a des valeurs > 255, utilisons cv2.IMREAD_UNCHANGED au lieu de GRAYSCALE
-        # Au lieu de cv2.imdecode:
+        mask_in_memory.seek(0)  # Important: revenir au début du flux
+
+        # Utiliser PIL pour charger le masque et préserver le type original
         mask_pil = Image.open(mask_in_memory)
-        # Si le masque est en mode palette ou L, convertir en array numpy
         mask = np.array(mask_pil)
-        
-        if mask is None:
-            return jsonify({"success": False, "error": "Impossible de décoder le masque"}), 400
-        
+
+        print(f"Format du masque chargé: {mask_pil.mode}, dtype: {mask.dtype}")
+        print(f"Dimensions du masque: {mask.shape}")
+
         # Afficher les valeurs uniques dans le masque pour le débogage
         unique_mask_values = np.unique(mask)
         print(f"Valeurs uniques dans le masque original: {unique_mask_values}")
+
+        # Si le masque est en mode palette, convertir en raster
+        if mask_pil.mode == 'P':
+            print("Conversion du masque en mode palette vers raster...")
+            mask_pil = mask_pil.convert('L')
+            mask = np.array(mask_pil)
+            print(f"Nouvelles valeurs uniques après conversion: {np.unique(mask)}")
+
+        # Application des couleurs pour chaque classe
+        for cls, color in enumerate(colors):
+            # Vérifier si la classe existe dans le masque avant de l'appliquer
+            if cls in np.unique(pred_mask):
+                colored_pred_mask[pred_mask == cls] = color
+            if cls in np.unique(mapped_mask):
+                colored_real_mask[mapped_mask == cls] = color
         
         # Charger la configuration
         from shared.config import IMG_HEIGHT, IMG_WIDTH
         
         # Définir notre propre fonction de mapping ici pour éviter les problèmes d'importation
         def cityscapes_to_model_classes(cityscapes_mask):
-            """Convertit les ID des masques Cityscapes vers les 8 classes du modèle"""
+            """
+            Convertit les ID des masques Cityscapes vers les 8 classes du modèle
+            en utilisant le même mapping que celui utilisé pendant l'entraînement
+            """
             # Créer un masque vide avec la même forme
-            model_mask = np.zeros_like(cityscapes_mask)
+            model_mask = np.zeros_like(cityscapes_mask, dtype=np.uint8)
             
-            # Afficher l'histogramme pour comprendre les valeurs
-            unique_vals, counts = np.unique(cityscapes_mask, return_counts=True)
+            # Afficher les informations de débogage
+            unique_vals = np.unique(cityscapes_mask)
             print(f"Masque format: {cityscapes_mask.dtype}, plage: {cityscapes_mask.min()}-{cityscapes_mask.max()}")
-            print(f"Valeurs uniques: {unique_vals}")
+            print(f"Valeurs uniques dans le masque original: {unique_vals}")
             
-            # Appliquer d'abord la stratégie basée sur les plages
-            # Ce mapping sera plus général et fonctionnera sur différents formats
-            model_mask[(cityscapes_mask > 0) & (cityscapes_mask < 10)] = 1  # Route/Trottoir
-            model_mask[(cityscapes_mask >= 10) & (cityscapes_mask < 20)] = 2  # Bâtiment
-            model_mask[(cityscapes_mask >= 20) & (cityscapes_mask < 25)] = 3  # Végétation
-            model_mask[(cityscapes_mask >= 25) & (cityscapes_mask < 30)] = 4  # Voiture
-            model_mask[(cityscapes_mask >= 30) & (cityscapes_mask < 40)] = 7  # Personne
+            # Appliquer le mapping exactement comme pendant l'entraînement
+            for k in CLASS_MAPPING:
+                model_mask[cityscapes_mask == k] = CLASS_MAPPING[k]
+            
+            # Vérifier les résultats du mapping
+            mapped_vals = np.unique(model_mask)
+            print(f"Valeurs uniques après mapping: {mapped_vals}")
+            
+            # Si aucune classe n'est mappée (masque entièrement noir), essayer une stratégie alternative
+            if len(mapped_vals) <= 1 and mapped_vals[0] == 0:
+                print("ATTENTION: Masque entièrement noir après mapping, utilisation du mapping de secours")
+                # Essayer une approche plus générique basée sur les plages de valeurs
+                model_mask[(cityscapes_mask > 0) & (cityscapes_mask < 10)] = 1  # Route/Sidewalk
+                model_mask[(cityscapes_mask >= 10) & (cityscapes_mask < 20)] = 2  # Building
+                model_mask[(cityscapes_mask >= 20) & (cityscapes_mask < 25)] = 3  # Vegetation
+                model_mask[(cityscapes_mask >= 25) & (cityscapes_mask < 30)] = 4  # Car
+                model_mask[(cityscapes_mask >= 30) & (cityscapes_mask < 40)] = 7  # Person
+                
+                # Réafficher les valeurs après stratégie alternative
+                backup_vals = np.unique(model_mask)
+                print(f"Valeurs après mapping de secours: {backup_vals}")
             
             return model_mask
         
