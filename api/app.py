@@ -290,7 +290,10 @@ def predict_with_mask():
         mask_file.save(mask_in_memory)
         mask_data = np.frombuffer(mask_in_memory.getvalue(), dtype=np.uint8)
         # Important: Si le masque a des valeurs > 255, utilisons cv2.IMREAD_UNCHANGED au lieu de GRAYSCALE
-        mask = cv2.imdecode(mask_data, cv2.IMREAD_UNCHANGED)
+        # Au lieu de cv2.imdecode:
+        mask_pil = Image.open(mask_in_memory)
+        # Si le masque est en mode palette ou L, convertir en array numpy
+        mask = np.array(mask_pil)
         
         if mask is None:
             return jsonify({"success": False, "error": "Impossible de décoder le masque"}), 400
@@ -304,45 +307,44 @@ def predict_with_mask():
         
         # Définir notre propre fonction de mapping ici pour éviter les problèmes d'importation
         def cityscapes_to_model_classes(cityscapes_mask):
-            """
-            Convertit les ID des masques Cityscapes gtFine_labelIds vers les 8 classes du modèle
-            
-            Classes du modèle:
-            0: Background, 1: Road, 2: Building, 3: Vegetation, 
-            4: Car, 5: Sidewalk, 6: Sky, 7: Person
-            """
+            """Convertit les ID des masques Cityscapes vers les 8 classes du modèle"""
             # Créer un masque vide avec la même forme
             model_mask = np.zeros_like(cityscapes_mask)
             
-            # Mapping des étiquettes Cityscapes vers nos 8 classes
-            # Référence: https://github.com/mcordts/cityscapesScripts/blob/master/cityscapesscripts/helpers/labels.py
+            # Afficher l'histogramme pour comprendre les valeurs
+            unique_vals, counts = np.unique(cityscapes_mask, return_counts=True)
+            print(f"Masque format: {cityscapes_mask.dtype}, plage: {cityscapes_mask.min()}-{cityscapes_mask.max()}")
+            print(f"Valeurs uniques: {unique_vals}")
             
-            # Road (7) -> 1
-            model_mask[cityscapes_mask == 7] = 1
-            
-            # Building (11) -> 2
-            model_mask[cityscapes_mask == 11] = 2
-            
-            # Vegetation (21, 22) -> 3
-            model_mask[cityscapes_mask == 21] = 3  # Tree
-            model_mask[cityscapes_mask == 22] = 3  # Vegetation
-            
-            # Car (26) -> 4
-            model_mask[cityscapes_mask == 26] = 4
-            
-            # Sidewalk (8) -> 5
-            model_mask[cityscapes_mask == 8] = 5
-            
-            # Sky (23) -> 6
-            model_mask[cityscapes_mask == 23] = 6
-            
-            # Person (24) -> 7
-            model_mask[cityscapes_mask == 24] = 7
-            
-            # Tout le reste -> 0 (background, déjà initialisé à 0)
+            # Appliquer d'abord la stratégie basée sur les plages
+            # Ce mapping sera plus général et fonctionnera sur différents formats
+            model_mask[(cityscapes_mask > 0) & (cityscapes_mask < 10)] = 1  # Route/Trottoir
+            model_mask[(cityscapes_mask >= 10) & (cityscapes_mask < 20)] = 2  # Bâtiment
+            model_mask[(cityscapes_mask >= 20) & (cityscapes_mask < 25)] = 3  # Végétation
+            model_mask[(cityscapes_mask >= 25) & (cityscapes_mask < 30)] = 4  # Voiture
+            model_mask[(cityscapes_mask >= 30) & (cityscapes_mask < 40)] = 7  # Personne
             
             return model_mask
         
+        if mask is None:
+            return jsonify({"success": False, "error": "Impossible de décoder le masque"}), 400
+
+        # Visualiser le masque brut pour le débogage
+        raw_mask_vis = np.zeros((*mask.shape, 3), dtype=np.uint8)
+        # Normaliser le masque pour la visualisation (étire les valeurs entre 0-255)
+        if mask.max() > 0:  # Éviter la division par zéro
+            normalized = (mask.astype(float) * 255 / mask.max()).astype(np.uint8)
+            raw_mask_vis[..., 0] = normalized  # Canal rouge
+            raw_mask_vis[..., 1] = normalized  # Canal vert
+            raw_mask_vis[..., 2] = normalized  # Canal bleu
+
+        # Convertir en base64 pour la visualisation
+        raw_mask_pil = Image.fromarray(raw_mask_vis)
+        raw_mask_io = io.BytesIO()
+        raw_mask_pil.save(raw_mask_io, 'PNG')
+        raw_mask_io.seek(0)
+        raw_mask_base64 = base64.b64encode(raw_mask_io.getvalue()).decode('utf-8')
+
         # Convertir BGR en RGB pour l'image
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
@@ -429,6 +431,8 @@ def predict_with_mask():
             "success": True,
             "pred_mask_base64": pred_mask_base64,
             "real_mask_base64": real_mask_base64,
+            "raw_mask_base64": raw_mask_base64,  # Ajouté pour le débogage
+            "unique_mask_values": unique_mask_values.tolist(),  # Valeurs uniques pour débogage
             "metrics": {
                 "iou": float(mean_iou),
                 "iou_per_class": iou_per_class,
@@ -764,6 +768,43 @@ def index():
     </html>
     """
     return html
-
+@app.route('/analyze_mask', methods=['POST'])
+def analyze_mask():
+    """Endpoint pour analyser un masque sans faire de prédiction"""
+    try:
+        if 'mask' not in request.files:
+            return jsonify({"success": False, "error": "Masque requis"}), 400
+            
+        mask_file = request.files['mask']
+        
+        # Tenter plusieurs méthodes de chargement
+        # 1. Méthode cv2
+        mask_in_memory = io.BytesIO()
+        mask_file.save(mask_in_memory)
+        mask_data = np.frombuffer(mask_in_memory.getvalue(), dtype=np.uint8)
+        cv2_mask = cv2.imdecode(mask_data, cv2.IMREAD_UNCHANGED)
+        
+        # 2. Méthode PIL
+        mask_file.seek(0)  # Revenir au début du fichier
+        pil_mask = Image.open(mask_file)
+        pil_array = np.array(pil_mask)
+        
+        return jsonify({
+            "success": True,
+            "cv2_analysis": {
+                "shape": cv2_mask.shape if cv2_mask is not None else None,
+                "dtype": str(cv2_mask.dtype) if cv2_mask is not None else None,
+                "unique_values": np.unique(cv2_mask).tolist() if cv2_mask is not None else None
+            },
+            "pil_analysis": {
+                "shape": pil_array.shape,
+                "dtype": str(pil_array.dtype),
+                "mode": pil_mask.mode,
+                "unique_values": np.unique(pil_array).tolist()
+            }
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
