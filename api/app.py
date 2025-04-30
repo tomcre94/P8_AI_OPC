@@ -281,134 +281,57 @@ def predict():
 
 @app.route('/predict_with_mask', methods=['POST'])
 def predict_with_mask():
-    """Endpoint qui prédit la segmentation et compare avec un masque réel"""
     try:
-        # Vérifier d'abord que les fichiers ont été fournis
+        # Vérifier les fichiers
         if 'image' not in request.files or 'mask' not in request.files:
-            return jsonify({
-                "success": False, 
-                "error": "L'image et le masque sont requis"
-            }), 400
+            return jsonify({"success": False, "error": "L'image et le masque sont requis"}), 400
         
         # Récupérer les fichiers
         image_file = request.files['image']
         mask_file = request.files['mask']
         
-        print(f"Fichier image reçu: {image_file.filename}, type: {image_file.content_type}")
-        print(f"Fichier masque reçu: {mask_file.filename}, type: {mask_file.content_type}")
-        
-        # Charger les dépendances seulement lorsque nécessaire
+        # Charger les dépendances
         cv2, tf, loaded_model = load_dependencies()
-                
-        # Traiter l'image
+        from shared.config import IMG_HEIGHT, IMG_WIDTH
+        
+        # 1. Charger l'image
         in_memory_file = io.BytesIO()
         image_file.save(in_memory_file)
         data = np.frombuffer(in_memory_file.getvalue(), dtype=np.uint8)
         image = cv2.imdecode(data, cv2.IMREAD_COLOR)
-        
         if image is None:
             return jsonify({"success": False, "error": "Impossible de décoder l'image"}), 400
-            
-        # Charger le masque avec OpenCV pour plus de cohérence avec l'entraînement
+        
+        # 2. Charger le masque en niveau de gris directement (comme dans visualize_samples)
         mask_in_memory = io.BytesIO()
         mask_file.save(mask_in_memory)
         mask_data = np.frombuffer(mask_in_memory.getvalue(), dtype=np.uint8)
-        mask = cv2.imdecode(mask_data, cv2.IMREAD_UNCHANGED)
-
-        # Si c'est une image RGB, la convertir en grayscale
-        if len(mask.shape) == 3 and mask.shape[2] >= 3:
-            mask = cv2.cvtColor(mask, cv2.COLOR_RGB2GRAY)
-
-        print(f"Masque format OpenCV: {mask.dtype}, plage: {mask.min()}-{mask.max()}")
-
-        print(f"Dimensions du masque: {mask.shape}")
-
-        # Afficher les valeurs uniques dans le masque pour le débogage
-        unique_mask_values = np.unique(mask)
-        print(f"Valeurs uniques dans le masque original: {unique_mask_values}")
-       
-        # Charger la configuration
-        from shared.config import IMG_HEIGHT, IMG_WIDTH
-        
-        # Définir notre propre fonction de mapping ici pour éviter les problèmes d'importation
-        def cityscapes_to_model_classes(cityscapes_mask):
-            """
-            Convertit les ID des masques Cityscapes vers les 8 classes du modèle
-            en utilisant le même mapping que celui utilisé pendant l'entraînement
-            """
-            # Créer un masque vide avec la même forme
-            model_mask = np.zeros_like(cityscapes_mask, dtype=np.uint8)
-            
-            # Afficher les informations de débogage
-            unique_vals = np.unique(cityscapes_mask)
-            print(f"Masque format: {cityscapes_mask.dtype}, plage: {cityscapes_mask.min()}-{cityscapes_mask.max()}")
-            print(f"Valeurs uniques dans le masque original: {unique_vals}")
-            
-            # Appliquer le mapping exactement comme pendant l'entraînement
-            for k in CLASS_MAPPING:
-                model_mask[cityscapes_mask == k] = CLASS_MAPPING[k]
-            
-            # Vérifier les résultats du mapping
-            mapped_vals = np.unique(model_mask)
-            print(f"Valeurs uniques après mapping: {mapped_vals}")
-            
-            # Si aucune classe n'est mappée (masque entièrement noir), essayer une stratégie alternative
-            if len(mapped_vals) <= 1 and mapped_vals[0] == 0:
-                print("ATTENTION: Masque entièrement noir après mapping, utilisation du mapping de secours")
-                # Essayer une approche plus générique basée sur les plages de valeurs
-                model_mask[(cityscapes_mask > 0) & (cityscapes_mask < 10)] = 1  # Route/Sidewalk
-                model_mask[(cityscapes_mask >= 10) & (cityscapes_mask < 20)] = 2  # Building
-                model_mask[(cityscapes_mask >= 20) & (cityscapes_mask < 25)] = 3  # Vegetation
-                model_mask[(cityscapes_mask >= 25) & (cityscapes_mask < 30)] = 4  # Car
-                model_mask[(cityscapes_mask >= 30) & (cityscapes_mask < 40)] = 7  # Person
-                
-                # Réafficher les valeurs après stratégie alternative
-                backup_vals = np.unique(model_mask)
-                print(f"Valeurs après mapping de secours: {backup_vals}")
-            
-            return model_mask
+        mask = cv2.imdecode(mask_data, cv2.IMREAD_GRAYSCALE)  # Utiliser directement GRAYSCALE
         
         if mask is None:
             return jsonify({"success": False, "error": "Impossible de décoder le masque"}), 400
-
-        # Visualiser le masque brut pour le débogage
-        raw_mask_vis = np.zeros((*mask.shape, 3), dtype=np.uint8)
-        # Normaliser le masque pour la visualisation (étire les valeurs entre 0-255)
-        if mask.max() > 0:  # Éviter la division par zéro
-            normalized = (mask.astype(float) * 255 / mask.max()).astype(np.uint8)
-            raw_mask_vis[..., 0] = normalized  # Canal rouge
-            raw_mask_vis[..., 1] = normalized  # Canal vert
-            raw_mask_vis[..., 2] = normalized  # Canal bleu
-
-        # Convertir en base64 pour la visualisation
-        raw_mask_pil = Image.fromarray(raw_mask_vis)
-        raw_mask_io = io.BytesIO()
-        raw_mask_pil.save(raw_mask_io, 'PNG')
-        raw_mask_io.seek(0)
-        raw_mask_base64 = base64.b64encode(raw_mask_io.getvalue()).decode('utf-8')
-
-        # Convertir BGR en RGB pour l'image
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
-        # Redimensionner l'image et le masque
+        # 3. Redimensionner
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         resized_img = cv2.resize(image, (IMG_WIDTH, IMG_HEIGHT))
         resized_mask = cv2.resize(mask, (IMG_WIDTH, IMG_HEIGHT), interpolation=cv2.INTER_NEAREST)
         
-        # Mapper les classes du masque avec notre nouvelle fonction
-        mapped_mask = cityscapes_to_model_classes(resized_mask)
+        # 4. Mapper les classes du masque (comme dans visualize_samples)
+        # Définition directe de map_masks
+        def map_masks(mask):
+            out_mask = np.zeros(mask.shape, dtype=np.uint8)
+            for k in CLASS_MAPPING:
+                out_mask[mask == k] = CLASS_MAPPING[k]
+            return out_mask
+            
+        mapped_mask = map_masks(resized_mask)
         
-        # Vérifier les valeurs du masque mappé
-        unique_mapped_values = np.unique(mapped_mask)
-        print(f"Valeurs uniques dans le masque mappé: {unique_mapped_values}")
-        
-        # Normaliser l'image pour la prédiction
+        # 5. Faire la prédiction
         processed_img = resized_img / 255.0
-        
-        # Prédiction
         prediction = loaded_model.predict(np.expand_dims(processed_img, axis=0))[0]
         pred_mask = np.argmax(prediction, axis=-1)
         
-        # Couleurs pour visualisation
+        # 6. Créer des versions colorées des masques (comme dans visualize_predictions)
         colors = [
             [0, 0, 0],        # Background
             [128, 64, 128],   # Road
@@ -420,45 +343,38 @@ def predict_with_mask():
             [220, 20, 60]     # Person
         ]
         
-        # Créer des masques colorisés
-        colored_pred_mask = np.zeros((*pred_mask.shape, 3), dtype=np.uint8)
-        colored_real_mask = np.zeros((*mapped_mask.shape, 3), dtype=np.uint8)
-
-        # Debug: afficher les classes trouvées 
-        pred_classes = np.unique(pred_mask)
-        real_classes = np.unique(mapped_mask)
-        print(f"Classes dans la prédiction: {pred_classes}")
-        print(f"Classes dans le masque réel: {real_classes}")
-
-        # Définir les classes attendues après mapping
-        target_classes = [0, 1, 2, 3, 4, 5, 6, 7]  # Background, Road, Building, etc.
-
-        # Application des couleurs pour chaque classe
-        for i, cls in enumerate(target_classes):
-            # Vérifier si la classe existe dans le masque avant de l'appliquer
-            if cls in pred_classes:
-                colored_pred_mask[pred_mask == cls] = colors[i]
-            if cls in real_classes:
-                colored_real_mask[mapped_mask == cls] = colors[i]
-                       
-        # Convertir en images PNG puis en base64
-        pred_mask_pil = Image.fromarray(colored_pred_mask)
-        real_mask_pil = Image.fromarray(colored_real_mask)
+        # Information sur les classes pour le débogage
+        unique_mapped = np.unique(mapped_mask)
+        unique_pred = np.unique(pred_mask)
+        print(f"Classes dans le masque mappé: {unique_mapped}")
+        print(f"Classes dans la prédiction: {unique_pred}")
         
+        # Créer des masques colorés
+        true_colored_mask = np.zeros((*mapped_mask.shape, 3), dtype=np.uint8)
+        pred_colored_mask = np.zeros((*pred_mask.shape, 3), dtype=np.uint8)
+        
+        # Appliquer les couleurs directement comme dans visualize_samples/predictions
+        for cls, color in enumerate(colors):
+            true_colored_mask[mapped_mask == cls] = color
+            pred_colored_mask[pred_mask == cls] = color
+        
+        # 7. Convertir en base64 pour la réponse
+        true_mask_pil = Image.fromarray(true_colored_mask)
+        pred_mask_pil = Image.fromarray(pred_colored_mask)
+        
+        true_img_io = io.BytesIO()
         pred_img_io = io.BytesIO()
-        real_img_io = io.BytesIO()
         
+        true_mask_pil.save(true_img_io, 'PNG')
         pred_mask_pil.save(pred_img_io, 'PNG')
-        real_mask_pil.save(real_img_io, 'PNG')
         
+        true_img_io.seek(0)
         pred_img_io.seek(0)
-        real_img_io.seek(0)
         
+        real_mask_base64 = base64.b64encode(true_img_io.getvalue()).decode('utf-8')
         pred_mask_base64 = base64.b64encode(pred_img_io.getvalue()).decode('utf-8')
-        real_mask_base64 = base64.b64encode(real_img_io.getvalue()).decode('utf-8')
         
-        # Calculer des métriques de comparaison
-        # Note: On utilise la classe comme index pour la comparaison
+        # 8. Calculer les métriques
         accuracy = np.mean(pred_mask == mapped_mask)
         
         # Calcul de l'IoU pour chaque classe et moyenne
@@ -486,8 +402,8 @@ def predict_with_mask():
             "success": True,
             "pred_mask_base64": pred_mask_base64,
             "real_mask_base64": real_mask_base64,
-            "raw_mask_base64": raw_mask_base64,  # Ajouté pour le débogage
-            "unique_mask_values": unique_mask_values.tolist(),  # Valeurs uniques pour débogage
+            "unique_mapped_values": unique_mapped.tolist(),
+            "unique_pred_values": unique_pred.tolist(),
             "metrics": {
                 "iou": float(mean_iou),
                 "iou_per_class": iou_per_class,
